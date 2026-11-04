@@ -1,5 +1,7 @@
 const KeycloakClient = require('./keycloak');
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 module.exports = async function app(plugin) {
   const params = plugin.params || {};
   const client = new KeycloakClient({
@@ -46,7 +48,55 @@ module.exports = async function app(plugin) {
     if (message.uuid) plugin.sendResponse({ ...message, imported: users.length }, 1);
   }
 
+  // Вход через обычную форму intraHouse (как у LDAP-плагина):
+  // сервер присылает { param: 'authUser', dn, pbx: base64(пароль), uuid }
+  // и ждет sendResponse(message, 1) при успехе или 0 при ошибке.
+  async function authUserPassword(message) {
+    const { uuid, dn, param } = message;
+    const password = Buffer.from(String(message.pbx || ''), 'base64').toString();
+    let login = '';
+
+    try {
+      login = await resolveLogin(message);
+      plugin.log(`Keycloak: password auth for dn=${dn || ''} login=${login || ''}`, 1);
+
+      const tokens = await client.passwordGrant(login, password);
+      const payload = await client.verifyJwt(tokens.access_token);
+      const tokenLogin = getLogin(payload);
+
+      if (String(tokenLogin).toLowerCase() !== String(login).toLowerCase()) {
+        throw new Error(`Логин в токене (${tokenLogin}) не совпадает с ${login}`);
+      }
+
+      plugin.log(`Keycloak: user authorized: ${login}`, 1);
+      plugin.sendResponse(message, 1);
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+
+      plugin.log(`Keycloak: auth failed for ${login || dn}: ${errorMessage}`);
+      plugin.sendResponse({ uuid, dn, param, message: errorMessage }, 0);
+    }
+  }
+
+  // dn у импортированных пользователей - это id Keycloak (UUID).
+  // Логин берем из сообщения, если он есть, иначе запрашиваем по id.
+  async function resolveLogin(message) {
+    const direct = message.login || message.username || '';
+    if (direct) return direct;
+
+    const dn = String(message.dn || '');
+    if (!UUID_RE.test(dn)) return dn;
+
+    const user = await client.getUserById(dn);
+    return (user && user.username) || dn;
+  }
+
   async function authUser(message) {
+    if (message.pbx !== undefined) {
+      await authUserPassword(message);
+      return;
+    }
+
     const tokens = await client.exchangeAuthorizationCode(message);
     const payload = await client.verifyJwt(tokens.access_token);
     const login = getLogin(payload);
@@ -95,6 +145,7 @@ module.exports = async function app(plugin) {
     const handler = handlers[command];
 
     plugin.log(`Keycloak command: ${command || 'undefined'}`, 1);
+    plugin.log(`Keycloak command fields: ${Object.keys(message).join(', ')}`, 2);
 
     if (!handler) {
       plugin.log(`ERROR: Unknown command: ${command}`);

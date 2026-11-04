@@ -131,6 +131,47 @@ class KeycloakClient {
     return data.access_token;
   }
 
+  // Проверка логина/пароля (Resource Owner Password Credentials).
+  // Для клиента clientId в Keycloak должен быть включен "Direct access grants".
+  async passwordGrant(username, password) {
+    this.validate();
+    if (!username) throw new Error('Не передан логин пользователя');
+    if (!password) throw new Error('Не передан пароль пользователя');
+
+    const path = `/realms/${encode(this.realm)}/protocol/openid-connect/token`;
+    const body = new URLSearchParams({
+      grant_type: 'password',
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
+      username,
+      password,
+      scope: 'openid',
+    }).toString();
+    let tokens;
+
+    try {
+      tokens = await this.request('POST', path, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+    } catch (error) {
+      // Тело ответа Keycloak не содержит пароль, но может быть длинным - берем суть
+      const text = getErrorMessage(error);
+      const match = text.match(/"error_description"\s*:\s*"([^"]*)"/);
+      throw new Error(match ? `Keycloak: ${match[1]}` : text);
+    }
+
+    if (!tokens || !tokens.access_token) {
+      throw new Error('Keycloak не вернул access_token');
+    }
+    return tokens;
+  }
+
+  async getUserById(userId, token) {
+    const accessToken = token || await this.getAccessToken();
+    return this.get(`/admin/realms/${encode(this.realm)}/users/${encode(userId)}`, accessToken);
+  }
+
   async exchangeAuthorizationCode(source = {}) {
     const payload = source.data && typeof source.data === 'object' ? source.data : {};
     const data = {
