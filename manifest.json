@@ -1,7 +1,6 @@
 {
   "name": "keycloak",
   "description": "Keycloak client plugin",
-  "service": "ldap",
   "single": 1,
   "nochannels": 1,
   "passwordProp": "clientSecret",
