@@ -113,6 +113,17 @@
       "title": "Роли Keycloak",
       "type": "input",
       "default": ""
+    },
+    {
+      "prop": "groupsSource",
+      "title": "Группы intraHouse создавать из",
+      "type": "droplist",
+      "data": [
+        { "id": "roles", "title": "Ролей realm (с учетом групп)" },
+        { "id": "groups", "title": "Групп Keycloak" },
+        { "id": "both", "title": "Ролей и групп" }
+      ],
+      "default": "roles"
     }
   ],
   "pbut": [

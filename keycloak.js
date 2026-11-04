@@ -10,6 +10,7 @@ const JWT_ALGORITHMS = {
   RS384: 'RSA-SHA384',
   RS512: 'RSA-SHA512',
 };
+const SERVICE_ROLES = ['offline_access', 'uma_authorization'];
 const encode = (value) => encodeURIComponent(value);
 
 class KeycloakClient {
@@ -375,8 +376,10 @@ class KeycloakClient {
     return this.get(`/admin/realms/${encode(this.realm)}/users/${encode(userId)}/groups`, token);
   }
 
-  getUserRealmRoles(userId, token) {
-    const path = `/admin/realms/${encode(this.realm)}/users/${encode(userId)}/role-mappings/realm`;
+  // effective = true: роли с учетом групп и составных ролей (role-mappings/realm/composite)
+  getUserRealmRoles(userId, token, effective = false) {
+    const path = `/admin/realms/${encode(this.realm)}/users/${encode(userId)}/role-mappings/realm`
+      + (effective ? '/composite' : '');
     return this.get(path, token);
   }
 
@@ -429,11 +432,15 @@ class KeycloakClient {
     return { users: [...usersById.values()], selectedGroups };
   }
 
-  async getUserFull(user, token) {
-    const [groups = [], roles = []] = await Promise.all([
+  async getUserFull(user, token, effectiveRoles = false) {
+    const [groups = [], allRoles = []] = await Promise.all([
       this.getUserGroups(user.id, token),
-      this.getUserRealmRoles(user.id, token),
+      this.getUserRealmRoles(user.id, token, effectiveRoles),
     ]);
+    // Служебные роли, которые есть у всех через default-roles - в группы не нужны
+    const roles = effectiveRoles
+      ? allRoles.filter(({ name }) => !SERVICE_ROLES.includes(name))
+      : allRoles;
 
     return {
       id: user.id,
@@ -454,7 +461,7 @@ class KeycloakClient {
     const result = groupFilters.length
       ? await this.getUsersByGroups(groupFilters, token, options.includeSubgroups !== false)
       : { users: await this.getUsers(token), selectedGroups: [] };
-    const users = await Promise.all(result.users.map((user) => this.getUserFull(user, token)));
+    const users = await Promise.all(result.users.map((user) => this.getUserFull(user, token, options.effectiveRoles)));
     const roleFilters = normalizeFilter(options.roleFilter);
     const filteredUsers = users
       .map((user) => ({ ...user, roles: filterRoles(user.roles, roleFilters) }))

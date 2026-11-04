@@ -39,11 +39,15 @@ module.exports = async function app(plugin) {
       groupFilter: params.groupFilter || '',
       roleFilter: params.roleFilter || '',
       includeSubgroups: true,
+      effectiveRoles: true,
     });
-    const users = mapUsers(result.users);
+    const source = getGroupsSource(params.groupsSource);
+    const users = mapUsers(result.users, source);
+
+    plugin.log(`Keycloak: groups for intraHouse from: ${source}`, 1);
 
     plugin.send({ type: 'syncUsers', data: users });
-    plugin.log(`Keycloak: sent ${users.length} users to IntraSCADA`, 1);
+    plugin.log(`Keycloak: sent ${users.length} users to intraHouse`, 1);
 
     if (message.uuid) plugin.sendResponse({ ...message, imported: users.length }, 1);
   }
@@ -210,7 +214,26 @@ function buildTokenData(tokens) {
   };
 }
 
-function mapUsers(users) {
+// Откуда брать группы intraHouse (поле roles при импорте): roles | groups | both
+function getGroupsSource(value) {
+  const id = value && typeof value === 'object' ? value.id : value;
+  return ['roles', 'groups', 'both'].includes(id) ? id : 'roles';
+}
+
+// Группа Keycloak как группа intraHouse: верхний уровень - по имени, вложенная - путь без
+// начального слэша (parent/child), чтобы одинаковые имена в разных ветках не слились.
+function groupAsRole(group) {
+  const path = String(group.path || '').replace(/^\/+/, '');
+  return { id: group.id, name: path.includes('/') ? path : group.name };
+}
+
+// Роль и группа с одинаковым именем - одна группа intraHouse (первой идет роль)
+function uniqueByName(items) {
+  const seen = new Set();
+  return items.filter(({ name }) => !seen.has(name) && seen.add(name));
+}
+
+function mapUsers(users, source = 'roles') {
   return (users || []).map((user) => ({
     dn: user.id,
     guid: user.id,
@@ -221,6 +244,9 @@ function mapUsers(users) {
       .map((group) => group.path || group.name)
       .filter(Boolean)
       .sort(),
-    roles: (user.roles || []).map(({ id, name }) => ({ id, name })),
+    roles: uniqueByName([
+      ...(source !== 'groups' ? (user.roles || []).map(({ id, name }) => ({ id, name })) : []),
+      ...(source !== 'roles' ? (user.groups || []).map(groupAsRole) : []),
+    ]),
   }));
 }
