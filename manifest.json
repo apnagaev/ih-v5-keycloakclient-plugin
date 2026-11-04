@@ -1,6 +1,6 @@
 {
-  "name": "keycloak",
-  "description": "Keycloak client plugin",
+  "name": "ldapclient",
+  "description": "LDAP client plugin (Keycloak)",
   "service": "ldap",
   "single": 1,
   "nochannels": 1,
@@ -8,6 +8,15 @@
   "restartOnChannelsChange": 0,
   "server":"5.19.32",
   "plugin_popup": [
+    {
+      "id": "syncGroups",
+      "type": "item",
+      "title": "Импорт групп KEYCLOAK",
+      "command": "send",
+      "param": {
+        "emit": "plugin_command:syncGroups"
+      }
+    },
     {
       "id": "syncUsers",
       "type": "item",

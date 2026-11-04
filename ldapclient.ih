@@ -1,0 +1,6 @@
+{
+  "id": "ldapclient",
+  "description": "LDAP client plugin (Keycloak)",
+  "cross": true,
+  "version": "5.0.21"
+}

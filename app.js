@@ -43,7 +43,7 @@ module.exports = async function app(plugin) {
     const users = mapUsers(result.users);
 
     plugin.send({ type: 'syncUsers', data: users });
-    plugin.log(`Keycloak: sent ${users.length} users to IntraSCADA`, 1);
+    plugin.log(`Keycloak: sent ${users.length} users to intraHouse`, 1);
 
     if (message.uuid) plugin.sendResponse({ ...message, imported: users.length }, 1);
   }
@@ -138,7 +138,36 @@ module.exports = async function app(plugin) {
     );
   }
 
-  const handlers = { authUser, getGroups, getRoles, refreshToken, syncUsers };
+  // Импорт групп в формате LDAP-плагина: { dn, guid, name }.
+  // Группы Keycloak - dn = путь группы (/admins), роли realm - dn = role:<имя>.
+  async function syncGroups(message) {
+    const result = await client.getUsersFull({
+      groupFilter: params.groupFilter || '',
+      roleFilter: params.roleFilter || '',
+      includeSubgroups: true,
+    });
+    const groups = new Map();
+
+    result.users.forEach((user) => {
+      (user.groups || []).forEach((group) => {
+        const dn = group.path || group.name;
+        if (dn) groups.set(dn, { dn, guid: group.id, name: group.name });
+      });
+      (user.roles || []).forEach((role) => {
+        const dn = roleDn(role.name);
+        groups.set(dn, { dn, guid: role.id, name: role.name });
+      });
+    });
+
+    const data = [...groups.values()].sort((a, b) => a.dn.localeCompare(b.dn));
+
+    plugin.send({ type: 'syncGroups', data });
+    plugin.log(`Keycloak: sent ${data.length} groups to intraHouse`, 1);
+
+    if (message.uuid) plugin.sendResponse({ ...message, imported: data.length }, 1);
+  }
+
+  const handlers = { authUser, getGroups, getRoles, refreshToken, syncGroups, syncUsers };
 
   plugin.onCommand(async (message) => {
     const command = message.param || message.command || message.type;
@@ -197,10 +226,16 @@ function mapUsers(users) {
     login: user.username,
     name: [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.username,
     email: user.email || '',
-    groups: (user.groups || [])
-      .map((group) => group.path || group.name)
+    // Формат LDAP-плагина: memberOf - список dn групп (см. syncGroups)
+    memberOf: [
+      ...(user.groups || []).map((group) => group.path || group.name),
+      ...(user.roles || []).map((role) => roleDn(role.name)),
+    ]
       .filter(Boolean)
       .sort(),
-    roles: (user.roles || []).map(({ id, name }) => ({ id, name })),
   }));
+}
+
+function roleDn(name) {
+  return `role:${name}`;
 }
