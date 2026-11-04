@@ -78,6 +78,22 @@ module.exports = async function app(plugin) {
     }
   }
 
+  // Логин для intraHouse должен совпадать с импортированным (username в Keycloak).
+  // preferred_username в токене может отличаться (маппер LDAP), поэтому по умолчанию
+  // берем username через Admin API по sub. Явно заданное поле токена - приоритетнее.
+  async function getUserLogin(payload) {
+    const claim = String(params.loginClaim || '').trim();
+    if (claim && claim !== 'preferred_username') return getLogin(payload, claim);
+
+    try {
+      const user = payload && payload.sub ? await client.getUserById(payload.sub) : null;
+      if (user && user.username) return user.username;
+    } catch (error) {
+      plugin.log(`Keycloak: username by sub not found: ${getErrorMessage(error)}`);
+    }
+    return getLogin(payload);
+  }
+
   // dn у импортированных пользователей - это id Keycloak (UUID).
   // Логин берем из сообщения, если он есть, иначе запрашиваем по id.
   async function resolveLogin(message) {
@@ -99,7 +115,7 @@ module.exports = async function app(plugin) {
 
     const tokens = await client.exchangeAuthorizationCode(message);
     const payload = await client.verifyJwt(tokens.access_token);
-    const login = getLogin(payload, params.loginClaim);
+    const login = await getUserLogin(payload);
 
     if (!login) {
       throw new Error('В access_token не найден логин пользователя');
@@ -119,7 +135,7 @@ module.exports = async function app(plugin) {
   async function refreshToken(message) {
     const tokens = await client.refreshTokens(message);
     const payload = await client.verifyJwt(tokens.access_token);
-    const login = getLogin(payload, params.loginClaim);
+    const login = await getUserLogin(payload);
 
     if (!login) {
       throw new Error(
