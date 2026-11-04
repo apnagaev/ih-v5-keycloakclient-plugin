@@ -72,7 +72,7 @@
     },
     {
       "prop": "authClientId",
-      "title": "Public Client ID",
+      "title": "Client ID для SSO (OIDC-мост)",
       "type": "input",
       "default": "intrascada"
     }

@@ -1,6 +1,8 @@
 const KeycloakClient = require('./keycloak');
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TOKEN_SKEW = 30;
+const looksLikeJwt = (value) => /^eyJ[\w-]*\.[\w-]+\.[\w-]+$/.test(String(value || ''));
+const UUID_RE =/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 module.exports = async function app(plugin) {
   const params = plugin.params || {};
@@ -60,8 +62,18 @@ module.exports = async function app(plugin) {
       login = await resolveLogin(message);
       plugin.log(`Keycloak: password auth for dn=${dn || ''} login=${login || ''}`, 1);
 
-      const tokens = await client.passwordGrant(login, password);
-      const payload = await client.verifyJwt(tokens.access_token);
+      let payload;
+
+      if (looksLikeJwt(password)) {
+        // SSO: вместо пароля пришел access_token Keycloak (страница-мост OIDC)
+        payload = await client.verifyJwt(password);
+        checkSsoToken(payload);
+        plugin.log(`Keycloak: SSO token accepted (azp=${payload.azp})`, 1);
+      } else {
+        const tokens = await client.passwordGrant(login, password);
+        payload = await client.verifyJwt(tokens.access_token);
+      }
+
       const tokenLogin = getLogin(payload);
 
       if (String(tokenLogin).toLowerCase() !== String(login).toLowerCase()) {
@@ -75,6 +87,19 @@ module.exports = async function app(plugin) {
 
       plugin.log(`Keycloak: auth failed for ${login || dn}: ${errorMessage}`);
       plugin.sendResponse({ uuid, dn, param, message: errorMessage }, 0);
+    }
+  }
+
+  // Токен для SSO: не просрочен, выдан клиентом моста (Public Client ID), тип Bearer
+  function checkSsoToken(payload) {
+    const now = Math.floor(Date.now() / 1000);
+    const ssoClient = params.authClientId || '';
+
+    if (!payload.exp || payload.exp < now - TOKEN_SKEW) throw new Error('SSO токен просрочен');
+    if (payload.nbf && payload.nbf > now + TOKEN_SKEW) throw new Error('SSO токен еще не действителен');
+    if (payload.typ && payload.typ !== 'Bearer') throw new Error(`SSO токен неверного типа: ${payload.typ}`);
+    if (!ssoClient || payload.azp !== ssoClient) {
+      throw new Error(`SSO токен выдан другому клиенту: ${payload.azp || '?'}`);
     }
   }
 
