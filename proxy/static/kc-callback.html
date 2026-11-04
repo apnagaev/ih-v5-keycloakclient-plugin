@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Авторизация</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #f4f4f4; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #263238; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 32px 40px; max-width: 420px; text-align: center; }
+  h1 { font-size: 22px; margin: 0 0 12px; }
+  p { margin: 0; color: #546e7a; }
+  a { color: #607d8b; }
+  .err { color: #c62828; margin-top: 12px; word-break: break-word; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1 id="title">Завершение авторизации…</h1>
+  <p id="text">Пожалуйста, подождите</p>
+</div>
+<script>
+// Возврат из Keycloak для intraHouse (вход в том же окне, см. proxy/nginx/ih-keycloak-bundle.conf).
+// Если окно открыто всплывающим (старый способ) - передаем код в основное окно, как штатная страница.
+(function () {
+  var q = new URLSearchParams(location.search);
+  var code = q.get('code');
+  var kcError = q.get('error_description') || q.get('error');
+
+  function fail(message, back) {
+    document.getElementById('title').textContent = 'Не удалось войти';
+    var text = document.getElementById('text');
+    text.textContent = '';
+    var err = document.createElement('div');
+    err.className = 'err';
+    err.textContent = message;
+    var link = document.createElement('a');
+    link.href = back || '/';
+    link.textContent = 'Вернуться к входу';
+    text.appendChild(err);
+    text.appendChild(document.createElement('br'));
+    text.appendChild(link);
+  }
+
+  if (window.opener && window.opener !== window && code) {
+    window.opener.postMessage({ type: 'KEYCLOAK_CALLBACK', code: code }, location.origin);
+    return;
+  }
+
+  var store = {};
+  ['kc_verifier', 'kc_api', 'kc_return'].forEach(function (key) {
+    try { store[key] = sessionStorage.getItem(key); sessionStorage.removeItem(key); } catch (e) { store[key] = null; }
+  });
+  var back = store.kc_return && store.kc_return.charAt(0) === '/' && store.kc_return.charAt(1) !== '/' ? store.kc_return : '/';
+  var api = store.kc_api === '/api/admin' ? '/api/admin' : '/api/user';
+
+  // Код одноразовый: убираем его из адресной строки и истории
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+
+  if (kcError) return fail('Keycloak: ' + kcError, back);
+  if (!code) return fail('Keycloak не вернул код авторизации', back);
+  if (!store.kc_verifier) return fail('Сеанс входа устарел, начните вход заново', back);
+
+  fetch(api, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      payload: true,
+      method: 'authkck',
+      code: code,
+      verifier: store.kc_verifier,
+      redirect_uri: location.origin + location.pathname
+    })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data || !data.response || !data.token) {
+        return fail((data && data.message) || 'Сервер не принял вход', back);
+      }
+      // Интерфейс подхватывает сеанс из localStorage при загрузке. После перехода
+      // между страницами токен в памяти не выживает, поэтому сеанс всегда запоминается.
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('rememberme', 'true');
+      location.replace(back);
+    })
+    .catch(function (e) { fail('Ошибка связи с сервером: ' + e.message, back); });
+})();
+</script>
+</body>
+</html>
