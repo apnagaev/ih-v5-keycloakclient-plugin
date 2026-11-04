@@ -62,7 +62,7 @@ module.exports = async function app(plugin) {
 
       const tokens = await client.passwordGrant(login, password);
       const payload = await client.verifyJwt(tokens.access_token);
-      const tokenLogin = getLogin(payload);
+      const tokenLogin = getLogin(payload, params.loginClaim);
 
       if (String(tokenLogin).toLowerCase() !== String(login).toLowerCase()) {
         throw new Error(`Логин в токене (${tokenLogin}) не совпадает с ${login}`);
@@ -99,7 +99,7 @@ module.exports = async function app(plugin) {
 
     const tokens = await client.exchangeAuthorizationCode(message);
     const payload = await client.verifyJwt(tokens.access_token);
-    const login = getLogin(payload);
+    const login = getLogin(payload, params.loginClaim);
 
     if (!login) {
       throw new Error('В access_token не найден логин пользователя');
@@ -119,7 +119,7 @@ module.exports = async function app(plugin) {
   async function refreshToken(message) {
     const tokens = await client.refreshTokens(message);
     const payload = await client.verifyJwt(tokens.access_token);
-    const login = getLogin(payload);
+    const login = getLogin(payload, params.loginClaim);
 
     if (!login) {
       throw new Error(
@@ -171,8 +171,12 @@ function getErrorMessage(error) {
     : String(error || 'Неизвестная ошибка');
 }
 
-function getLogin(payload) {
+// claim - поле токена с логином (по умолчанию preferred_username).
+// Должно совпадать с логином, под которым пользователь импортирован (username в Keycloak).
+function getLogin(payload, claim) {
   if (!payload) return '';
+  const field = String(claim || '').trim();
+  if (field) return payload[field] || '';
   return payload.preferred_username || payload.username || payload.email || payload.sub || '';
 }
 
