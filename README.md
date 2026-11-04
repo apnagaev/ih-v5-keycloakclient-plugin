@@ -5,7 +5,7 @@
 - **импорт пользователей** из realm Keycloak с фильтрами по группам и ролям; роли или группы Keycloak становятся группами intraHouse;
 - **вход через Keycloak** кнопкой «Войти через Keycloak» на форме входа (OpenID Connect, Authorization Code + PKCE), с SSO между сервисами realm.
 
-В каталоге [`proxy/`](proxy) — файлы для обратного прокси nginx/OpenResty: вход в том же окне вместо всплывающего, запоминание сеанса, перенаправление realm.
+В каталоге [`proxy/`](proxy) — файлы для обратного прокси nginx/OpenResty: вход в том же окне вместо всплывающего, запоминание сеанса, перенаправление realm, вход по паролю только из своих сетей, установка intraHouse как приложения.
 
 Это форк [intrahouseio/ih-v5-keycloakclient-plugin](https://github.com/intrahouseio/ih-v5-keycloakclient-plugin). Исходный плагин сделан для IntraSCADA; здесь он доработан и проверен на intraHouse 5.19.33. Отличия от исходного — в разделе [Изменения](#изменения).
 
@@ -166,7 +166,7 @@ curl -s 'https://ih.example.com/messages?app=user' | jq '.data | {useKeycloak, k
 |---|---|---|
 | [`proxy/nginx/ih-keycloak-bundle.conf`](proxy/nginx/ih-keycloak-bundle.conf) | include в `location` бандла `main.*.chunk.js` | 1) добавляет `rememberme` во вход через Keycloak; 2) вместо `window.open` сохраняет данные PKCE и путь возврата в `sessionStorage` и уводит вкладку на Keycloak |
 | [`proxy/static/kc-callback.html`](proxy/static/kc-callback.html) | отдаётся по `location = /auth/keycloak` | берёт код, отправляет серверу тот же запрос `authkck`, что интерфейс, кладёт токен в `localStorage`, убирает код из адресной строки и возвращает на `/` или `/admin/`. Если открыта всплывающим окном — передаёт код в основное окно, как штатная страница |
-| [`proxy/nginx/intrahouse-site.conf`](proxy/nginx/intrahouse-site.conf) | пример server-блока intraHouse | `location = /auth/keycloak`, `location` для бандла пользователя и вложенная — для бандла админки |
+| [`proxy/nginx/intrahouse-site.conf`](proxy/nginx/intrahouse-site.conf) | пример server-блока intraHouse | всё из разделов 6–8: `/auth/keycloak`, бандлы интерфейса и админки, ограничение входа по паролю, манифест и иконки |
 | [`proxy/nginx/keycloak-realm-redirect.conf`](proxy/nginx/keycloak-realm-redirect.conf) | в server-блок Keycloak | перенаправление realm `intrascada` (раздел 2) |
 
 Установка:
@@ -175,7 +175,7 @@ curl -s 'https://ih.example.com/messages?app=user' | jq '.data | {useKeycloak, k
 2. `nginx -t && nginx -s reload`.
 3. Проверка:
    ```bash
-   curl -s https://ih.example.com/auth/keycloak | grep -c kc_verifier            # 1 — отдаётся страница прокси
+   curl -s https://ih.example.com/auth/keycloak | grep -q kc_verifier && echo ok  # ok — отдаётся страница прокси
    B=$(curl -s https://ih.example.com/ | grep -o 'static/js/main[^"]*' | head -1)
    curl -s "https://ih.example.com/$B" | grep -c 'kc_verifier'                    # 1 — бандл подменён
    ```
@@ -192,6 +192,65 @@ curl -s 'https://ih.example.com/messages?app=user' | jq '.data | {useKeycloak, k
 - подмена привязана к тексту минифицированного бандла (проверено на 5.19.33). После обновления intraHouse строки могут измениться: тогда `sub_filter` ничего не заменит и вход вернётся к штатному всплывающему окну — ничего не сломается. Проверка — команды из шага 3;
 - бандл админки может отличаться от пользовательского; если подмена в нём не сработала, в админке останется всплывающее окно (для него и нужен COOP `unsafe-none` на `/auth/keycloak`);
 - `proxy_set_header Accept-Encoding ""` нужен потому, что `sub_filter` не работает со сжатым ответом бэкенда; сжатие для браузера делает сам nginx, если у вас включён `gzip`.
+
+## 7. Вход по паролю только из своих сетей (прокси)
+
+После включения Keycloak у intraHouse остаются локальные учётные записи (Admin и другие) с входом по логину и паролю. Их можно оставить только для домашней сети и VPN, а снаружи пускать только через Keycloak.
+
+Как отличить запросы: вход в интерфейс и в админку — `POST /api/user` и `POST /api/admin` с JSON:
+
+| Тело | Что это | Снаружи |
+|---|---|---|
+| `{"method":"auth","username":…,"password":…}` | вход по паролю | **запрещён** |
+| `{"method":"authkck","code":…,"verifier":…}` | вход через Keycloak | разрешён |
+| `{"method":"auth"}` + заголовок `token` | восстановление сеанса по сохранённому токену | разрешён |
+
+[`proxy/nginx/ih-local-login.conf`](proxy/nginx/ih-local-login.conf) читает тело на Lua (`access_by_lua_block`, `cjson`) и, если адрес не из своих сетей, отвечает `{"response":0,"message":"Вход по паролю доступен только из домашней сети. Войдите через Keycloak."}` — интерфейс показывает это сообщение. Каждый отказ пишется в error.log как `ih local login denied` с адресом.
+
+Установка (нужен OpenResty или nginx с модулем Lua и `cjson`):
+
+1. Свои сети — в `geo $ih_local_login` (уровень `http`, можно в начале файла сайта): домашняя сеть, **подсеть VPN**, внешний адрес дома.
+2. Отдельная `location` для обоих адресов входа, по образцу `intrahouse-site.conf`:
+   ```nginx
+   location ~* ^/api/(user|admin)/?$ {
+       include /etc/nginx/snippets/ih-local-login.conf;
+       proxy_pass http://intrahouse_backend;
+   }
+   ```
+   Регулярка — без учёта регистра и со слэшем на конце: сервер intraHouse принимает и `/API/User/`, а `location = /api/user` такие варианты пропустил бы. `/api/admin` нужно закрыть отдельно, даже если `/admin` уже ограничен `allow`/`deny`: путь начинается с `/api` и под `location ^~ /admin` не попадает.
+3. Проверка снаружи (мобильный интернет без VPN): вход под локальной учётной записью показывает сообщение о домашней сети, вход через Keycloak работает.
+
+Что отклоняется снаружи: вход по паролю в интерфейс и админку, в том числе с повтором ключа `method` в JSON, телом формы вместо JSON, параметрами в адресной строке; тело больше 64 КБ — 413.
+
+Ограничения:
+
+- удалённый доступ через облако / P2P intraHouse идёт мимо прокси и этим не ограничивается;
+- приложения, которые входят по паролю (настольный клиент intraHouse, мобильное приложение), снаружи перестанут входить — из своих сетей работают.
+
+## 8. intraHouse как приложение (PWA)
+
+Штатный манифест intraHouse — с пустым именем и единственной иконкой `favicon.ico` 64 px, поэтому Chrome вместо приложения создаёт обычный ярлык, который открывается вкладкой браузера. Прокси отдаёт свой манифест и иконки:
+
+| Файл | Что |
+|---|---|
+| [`proxy/static/ih-manifest.json`](proxy/static/ih-manifest.json) | имя «Умный дом», `display: standalone`, `start_url`/`scope` `/`, иконки 192, 512 и maskable 512 |
+| `proxy/static/ih-icon-192.png`, `ih-icon-512.png`, `ih-icon-maskable-512.png`, `ih-apple-touch-icon.png` | иконки (простой домик, своя картинка — замените PNG, сохранив имена) |
+| [`proxy/nginx/ih-pwa-head.conf`](proxy/nginx/ih-pwa-head.conf) | `sub_filter` в HTML: заголовок «Умный дом», иконка и мета-теги для iOS («На экран Домой» в полноэкранном режиме), цвет шапки |
+
+Установка по образцу `intrahouse-site.conf`: `location = /manifest.json` и `location` для иконок отдают файлы из `proxy/static`, а `ih-pwa-head.conf` подключается в `location /`. Для `sub_filter` нужен несжатый ответ бэкенда — `proxy_set_header Accept-Encoding "";` в той же `location`. Название и цвета меняются в манифесте и в `ih-pwa-head.conf`.
+
+Проверка:
+
+```bash
+curl -s https://ih.example.com/manifest.json | grep '"name"'                          # "Умный дом"
+curl -sI https://ih.example.com/ih-icon-512.png | grep -i content-type               # image/png
+```
+
+Установка на устройстве: удалите старый ярлык (Chrome запоминает манифест), откройте сайт и обновите страницу с очисткой кэша, затем:
+
+- ПК, Chrome: значок «Установить» в адресной строке или меню → «Трансляция, сохранение и отправка» → «Установить страницу как приложение»;
+- Android: меню Chrome → «Установить приложение»;
+- iPhone: Safari → «Поделиться» → «На экран Домой».
 
 ## Логин при входе
 
@@ -217,6 +276,8 @@ curl -s 'https://ih.example.com/messages?app=user' | jq '.data | {useKeycloak, k
 | «No keycloak user …» | пользователь не импортирован или логин не совпал. С версии 5.0.26 логин берётся по `sub`; проверьте, что «Поле токена с логином» пустое, и повторите импорт |
 | Новая вкладка снова показывает кнопку Keycloak | интерфейс не запоминает вход через Keycloak — раздел 6. При штатном всплывающем окне с подменой бандла нужна галочка «Запомнить меня» |
 | «Сеанс входа устарел» после возврата из Keycloak | вход начат в другой вкладке или данные `sessionStorage` очищены — начните вход заново |
+| «Вход по паролю доступен только из домашней сети» | сработало ограничение из раздела 7: войдите через Keycloak или добавьте свою сеть (например, VPN) в `geo $ih_local_login` |
+| «Создать ярлык» создаёт ярлык, а не приложение | штатный манифест без имени и иконок 192/512 — раздел 8; старый ярлык удалите |
 | «Неверный логин/пароль» на обычной форме | обычная форма проверяет локальный пароль intraHouse; у пользователей KEYCLOAK его нет — входите кнопкой Keycloak |
 | Плагин не стартует: `HTTP 401` | неверный Client secret |
 | Плагин не стартует: `HTTP 403` | у service account нет ролей `realm-management` |
@@ -227,6 +288,7 @@ curl -s 'https://ih.example.com/messages?app=user' | jq '.data | {useKeycloak, k
 
 Относительно [исходного плагина 5.0.19](https://github.com/intrahouseio/ih-v5-keycloakclient-plugin):
 
+- **proxy/** — вход по паролю только из своих сетей (раздел 7), установка как приложение (раздел 8). Плагин не меняется.
 - **proxy/** — вход в том же окне, запоминание сеанса при входе через Keycloak, перенаправление realm (раздел 6). Плагин не меняется.
 
 - **5.0.26** — роли для групп intraHouse берутся эффективные (с учётом групп и составных ролей); настройка «Группы intraHouse создавать из» (роли, группы Keycloak или оба).

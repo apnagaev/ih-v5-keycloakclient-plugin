@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Умный дом",
+  "short_name": "Умный дом",
+  "description": "intraHouse",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "theme_color": "#455a64",
+  "background_color": "#f4f4f4",
+  "icons": [
+    { "src": "/ih-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/ih-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/ih-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
